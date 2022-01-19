@@ -50,6 +50,13 @@ Shader "Unlit/Nuage 1"
                 return o;
             }
 
+            struct cloud
+            {
+                float3 pos;     //cloud center
+                float fm;       //frequency multiplicator
+                float nrw;      //cloud narrowness 
+            };
+
             //-----------------------------------------------------------------------------
             // Maths utils
             //-----------------------------------------------------------------------------
@@ -64,8 +71,9 @@ Shader "Unlit/Nuage 1"
 
             float noise(in float3 x)
             {
-                float3 p = floor(x + 2*_Time.x);
-                float3 f = frac(x + 2*_Time.x);
+                float dTime = 0 * _Time.x;
+                float3 p = floor(x + dTime);
+                float3 f = frac(x + dTime);
 
                 f = f * f * (3.0 - 2.0 * f);
 
@@ -78,68 +86,114 @@ Shader "Unlit/Nuage 1"
                 return res;
             }
 
-            float fbm(float3 p)
+            float fbm(float3 p, int oct)
             {
+                //Somme des octaves
                 float f;
-                f =  0.5000 * noise(p); p = mul(m, p) * 2.02;
-                f += 0.2500 * noise(p); p = mul(m, p) * 2.03;
-                f += 0.1250 * noise(p);
+                if (oct < 1) return 0;
+                if(oct > 0) f  = 0.5000 * noise(p); p = mul(m, p) * 2.02;
+                if(oct > 1) f += 0.2500 * noise(p); p = mul(m, p) * 2.03;
+                if(oct > 2) f += 0.1250 * noise(p); p = mul(m, p) * 2.03;
+                if(oct > 3) f += 0.0325 * noise(p);
                 return f;
             }
 
+            float distanceSphere(float3 p, float3 center, float radius)
+            {
+                float d = length(p - center) - radius;
+                return d;
+            }
 
+            float distanceTore(float3 p, float3 center, float radius, float thickness) 
+            {
+                float d = length(float2(length(p.xy-center.xy) - radius, p.z)) - thickness;
+                return d;
+            }
+
+            float blinn(float3 p, cloud c)
+            {
+                float b = 0.1;
+                float l = length(p - c.pos);
+                return exp(-b * pow(l, 2));
+            }
+
+            float melange(float3 p, cloud c1, cloud c2, int oct)
+            {
+                float s;
+
+                [branch] switch (0)
+                {
+                case 0: //distance norme 2
+                    s = (-length(p - c1.pos) * c1.nrw + fbm(p * c1.fm, oct));
+                    break;
+                case 1: //distance norme 2 + Blinn
+                    s = blinn(p, c1) * (-length(p - c1.pos) * c1.nrw + fbm(p * c1.fm, oct))
+                        + blinn(p, c2) * (-length(p - c2.pos) * c2.nrw + fbm(p * c2.fm, oct));
+                    break;
+                case 2: //distance Tore
+                    s = (-distanceTore(p, c1.pos, 10., 2) * 5 * c1.nrw + fbm(p * c1.fm, oct));
+                        //+ (-distanceTore(p, c2.pos, 10, 2) * 5 * c2.nrw + fbm(p * c2.fm, oct));
+                    break;
+                case 3: //avec BLINN
+                    s = (-distanceSphere(p, c1.pos, 10.) * 5 * c1.nrw + fbm(p * c1.fm, oct));
+                    break;
+                case 4: //avec BLINN
+                    s = blinn(p, c1) * (-length(p - c1.pos) * c1.nrw + 1) + blinn(p,c2);
+                    break;
+                default:
+                    return 0.;
+                }
+                
+                return  s;
+            }
 
             //-----------------------------------------------------------------------------
             // Main functions
             //-----------------------------------------------------------------------------
             float scene(float3 p)
             {
-                return - length(p) * .10 + fbm(p * .3);
+                //Creation de nuages
+                cloud c1;
+                c1.nrw = 0.05;
+                c1.fm = .3;
+                c1.pos = float3(-0., 0., 0.);
+
+                cloud c2;
+                c2.nrw = 0.05;
+                c2.fm = .3;
+                c2.pos = float3(4., 0., 0.);
+
+                //Calcul forme et position des nuages de la scene
+                float oct = 3;
+                float s = melange(p, c1, c2, oct);
+
+                return s;
             }
 
             fixed4 frag(v2f i) : SV_Target
             {
-                float2 q = i.uv - .5;
-                float2 v = q;
-
-
-                //#if 0
-                //float2 mo = -1.0 + 2.0 * iMouse.xy / iResolution.xy;
-                //#else
-                //float2 mo = float2(iTime * .1, cos(iTime * .25) * 3.);
-                //#endif
-
-                float2 mo = float2(_Time.y * .1, cos(_Time.y * .25) * 3.);
-                //mo = 0;
+                float2 v = i.uv - .5;
 
                 //World Camera
                 float3 org = i.ro;
                 float3 dir = normalize(i.hitPos - i.ro);
 
-                //// camera by iq
-                //float3 org = 25.0 * normalize(float3(cos(2.75 - 3.0 * mo.x), 0.7 - 1.0 * (mo.y - 1.0), sin(2.75 - 3.0 * mo.x)));
-                //float3 ta = float3(0.0, 1.0, 0.0);
-                //float3 ww = normalize(ta - org);
-                //float3 uu = normalize(cross(float3(0.0, 1.0, 0.0), ww));
-                //float3 vv = normalize(cross(ww, uu));
-                //float3 dir = normalize(v.x * uu + v.y * vv + 1.5 * ww);
-
                 float4 color = 0.0;
-
-
+                float4 skyColor = lerp(float4(.3,.6, 1.,1.), float4(.05, .35, 1.,1.), v.y + 0.75);
 
                 const int nbSample = 64;
-                const int nbSampleLight = 6;
-
                 float zMax = 60.;
                 float step = zMax / float(nbSample);
+
+                const int nbSampleLight = 6;
                 float zMaxl = 20.;
                 float stepl = zMaxl / float(nbSampleLight);
+
                 float3 p = org;
                 float T = 1.;
-                float absorption = 100.;
+                float absorption = 80.;
                 float d = 0.;
-                float3 sun_direction = normalize(i.lightDir);
+                float3 sun_direction = (i.lightDir);
 
                 for (int i = 0; i < nbSample; i++)
                 {
@@ -164,7 +218,7 @@ Shader "Unlit/Nuage 1"
                         }
 
                         //Add ambiant + light scattering color
-                        color += float4(1.,1.,1.,0.) * 50. * tmp * T + float4(1., .7, .4, 1.) * 80. * tmp * T * Tl;
+                        color += float4(1., 1., 1., 0.) * 50. * tmp * T +float4(1., .7, .4, 1.) * 100. * tmp * T * Tl;
                     }
                     else{
                         d += 1.;
